@@ -98,7 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return CHOOSING_NICHE
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("📖 AI Sales Coach анализирует записи холодных звонков и переговоров.\n\nПосле анализа ты получишь:\n• Оценку звонка по 8 критериям\n• Разбор ошибок с цитатами\n• Конкретные фразы — как надо было ответить\n• Анализ эмоций клиента\n• Рекомендации для роста\n\nМетодология: Jordan Belfort, SPIN Selling, Sergey Filippov, Movsesian Erik\n\nПоддерживаемые форматы: голосовые сообщения, MP3, WAV, M4A, OGG до 25 МБ\n\nПросто отправь аудио)
+    await update.message.reply_text("📖 AI Sales Coach анализирует записи холодных звонков и переговоров.\n\nПосле анализа ты получишь:\n- Оценку звонка по 8 критериям\n- Разбор ошибок с цитатами\n- Конкретные фразы — как надо было ответить\n- Анализ эмоций клиента\n- Рекомендации для роста\n\nМетодология: Jordan Belfort, SPIN Selling, Sergey Filippov, Movsesian Erik\n\nПоддерживаемые форматы: голосовые сообщения, MP3, WAV, M4A, OGG до 25 МБ\n\nПросто отправь аудио)
 
 async def choose_niche(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     niche = update.message.text
