@@ -156,6 +156,13 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             ]
         )
         analysis = response.choices[0].message.content
+        analysis = analysis.replace("\u0425\u043e\u0440\u043e\u0448\u043e:", "\U0001f7e2 \u0425\u043e\u0440\u043e\u0448\u043e:")
+        analysis = analysis.replace("\u0423\u043f\u0443\u0449\u0435\u043d\u043e:", "\U0001f534 \u0423\u043f\u0443\u0449\u0435\u043d\u043e:")
+        analysis = analysis.replace("\u0417\u0430\u043c\u0435\u0447\u0435\u043d\u043e:", "\U0001f7e2 \u0417\u0430\u043c\u0435\u0447\u0435\u043d\u043e:")
+        analysis = analysis.replace("\u041d\u0435 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u043e:", "\U0001f534 \u041d\u0435 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u043e:")
+        analysis = analysis.replace("\u041f\u043e\u043b\u0443\u0447\u0435\u043d\u043e:", "\U0001f7e2 \u041f\u043e\u043b\u0443\u0447\u0435\u043d\u043e:")
+        analysis = analysis.replace("\u0427\u0442\u043e \u0441\u0440\u0430\u0431\u043e\u0442\u0430\u043b\u043e:", "\U0001f7e2 \u0427\u0442\u043e \u0441\u0440\u0430\u0431\u043e\u0442\u0430\u043b\u043e:")
+        analysis = analysis.replace("\u0427\u0442\u043e \u0443\u043f\u0443\u0449\u0435\u043d\u043e:", "\U0001f534 \u0427\u0442\u043e \u0443\u043f\u0443\u0449\u0435\u043d\u043e:")
         await status.delete()
         if len(str(transcript)) < 3000:
             await update.message.reply_text('\u0422\u0420\u0410\u041d\u0421\u041a\u0420\u0418\u041f\u0426\u0418\u042f:\n\n' + str(transcript)[:2900])
