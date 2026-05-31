@@ -50,6 +50,12 @@ def db_init():
             last_seen TEXT
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id BIGINT PRIMARY KEY,
+            niche TEXT
+        )
+    """)
     for col, coltype in [("remind_date", "TEXT"), ("summary", "TEXT"), ("reminded", "INTEGER DEFAULT 0")]:
         try:
             cur.execute(f"ALTER TABLE clients ADD COLUMN IF NOT EXISTS {col} {coltype}")
@@ -59,6 +65,29 @@ def db_init():
     cur.close()
     conn.close()
     logging.info("Database initialized")
+
+
+def db_set_niche(user_id, niche):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM user_settings WHERE user_id = %s", (user_id,))
+    if cur.fetchone():
+        cur.execute("UPDATE user_settings SET niche = %s WHERE user_id = %s", (niche, user_id))
+    else:
+        cur.execute("INSERT INTO user_settings (user_id, niche) VALUES (%s, %s)", (user_id, niche))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def db_get_niche(user_id):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("SELECT niche FROM user_settings WHERE user_id = %s", (user_id,))
+    r = cur.fetchone()
+    cur.close()
+    conn.close()
+    return r[0] if r else None
 
 
 def db_add_client(user_id, data):
@@ -305,7 +334,37 @@ async def crm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not clients:
         await update.message.reply_text('\u0423 \u0432\u0430\u0441 \u043f\u043e\u043a\u0430 \u043d\u0435\u0442 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432.\n\n\u041f\u0440\u043e\u0430\u043d\u0430\u043b\u0438\u0437\u0438\u0440\u0443\u0439\u0442\u0435 \u0437\u0432\u043e\u043d\u043e\u043a \u0438 \u0434\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u043f\u0435\u0440\u0432\u043e\u0433\u043e \u043a\u043b\u0438\u0435\u043d\u0442\u0430!')
         return
-    await update.message.reply_text(f'\U0001f4cb \u0421\u041f\u0418\u0421\u041e\u041a \u041a\u041b\u0418\u0415\u041d\u0422\u041e\u0412 ({len(clients)})')
+    text = f'\U0001f4cb \u0421\u041f\u0418\u0421\u041e\u041a \u041a\u041b\u0418\u0415\u041d\u0422\u041e\u0412 ({len(clients)})\n\n'
+    for i, c in enumerate(clients, 1):
+        text += f"{i}. {c['company']}\n"
+        text += f"   \U0001f464 {c['contact']}\n"
+        text += f"   \U0001f4cd {c['direction']}\n"
+        text += f"   \U0001f4e4 \u041e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e: {c['sent']}\n"
+        text += f"   \U0001f4de \u0421\u043b\u0435\u0434. \u0448\u0430\u0433: {c['next_step']}\n"
+        if c.get('remind_date'):
+            text += f"   \U0001f514 \u041d\u0430\u043f\u043e\u043c\u043d\u044e: {c['remind_date']}\n"
+        if c.get('summary'):
+            text += f"   \U0001f4ac {c['summary']}\n"
+        text += f"   \U0001f4c5 {c['created_date']}\n\n"
+    text += "\u2702\ufe0f \u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u0438\u043b\u0438 \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u043a\u043b\u0438\u0435\u043d\u0442\u0430: /edit"
+    while text:
+        if len(text) <= 4000:
+            await update.message.reply_text(text)
+            break
+        split = text[:4000].rfind("\n\n")
+        if split == -1:
+            split = 4000
+        await update.message.reply_text(text[:split])
+        text = text[split:].lstrip("\n")
+
+
+async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    clients = db_get_clients(user_id)
+    if not clients:
+        await update.message.reply_text('\u0423 \u0432\u0430\u0441 \u043f\u043e\u043a\u0430 \u043d\u0435\u0442 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432.')
+        return
+    await update.message.reply_text('\u2702\ufe0f \u0420\u0415\u0414\u0410\u041a\u0422\u0418\u0420\u041e\u0412\u0410\u041d\u0418\u0415\n\u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u043a\u043d\u043e\u043f\u043a\u0443 \u043f\u043e\u0434 \u043d\u0443\u0436\u043d\u044b\u043c \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u043c:')
     for c in clients:
         await update.message.reply_text(format_client_card(c), reply_markup=client_buttons(c['id']))
 
@@ -333,8 +392,9 @@ async def choose_niche(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text('\u0412\u044b\u0431\u0435\u0440\u0438 \u043e\u0431\u043b\u0430\u0441\u0442\u044c \u0438\u0437 \u0441\u043f\u0438\u0441\u043a\u0430', reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
         return CHOOSING_NICHE
     context.user_data["niche"] = niche
+    db_set_niche(update.effective_user.id, niche)
     await update.message.reply_text('\u041e\u0442\u043b\u0438\u0447\u043d\u043e! \u041d\u0438\u0448\u0430: ' + niche + '\n\n\u041e\u0442\u043f\u0440\u0430\u0432\u044c \u0437\u0430\u043f\u0438\u0441\u044c \u0437\u0432\u043e\u043d\u043a\u0430.\n\n\u041d\u0443\u0436\u043d\u0430 \u043f\u043e\u043c\u043e\u0449\u044c? /help', reply_markup=ReplyKeyboardRemove())
-    return WAITING_AUDIO
+    return ConversationHandler.END
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -347,7 +407,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     else:
         await update.message.reply_text('\u041e\u0442\u043f\u0440\u0430\u0432\u044c \u0430\u0443\u0434\u0438\u043e\u0444\u0430\u0439\u043b \u0438\u043b\u0438 \u0433\u043e\u043b\u043e\u0441\u043e\u0432\u043e\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435.')
         return WAITING_AUDIO
-    niche = context.user_data.get("niche", '\u041b\u043e\u0433\u0438\u0441\u0442\u0438\u043a\u0430')
+    niche = context.user_data.get("niche")
+    if not niche:
+        niche = db_get_niche(update.effective_user.id) or '\u041b\u043e\u0433\u0438\u0441\u0442\u0438\u043a\u0430'
+        context.user_data["niche"] = niche
     niche_ctx = NICHES_CTX.get(niche, "")
     status = await update.message.reply_text('\u041f\u043e\u043b\u0443\u0447\u0438\u043b \u0437\u0430\u043f\u0438\u0441\u044c! \u0422\u0440\u0430\u043d\u0441\u043a\u0440\u0438\u0431\u0438\u0440\u0443\u044e...')
     tmp = None
@@ -748,7 +811,10 @@ def main():
     db_init()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            MessageHandler(filters.VOICE | filters.AUDIO, handle_audio)
+        ],
         states={
             CHOOSING_NICHE: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_niche)],
             WAITING_AUDIO: [
@@ -773,6 +839,7 @@ def main():
     app.add_handler(conv)
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("crm", crm_command))
+    app.add_handler(CommandHandler("edit", edit_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CallbackQueryHandler(crm_callback, pattern="^(edit_|del_|delyes_|delno_|setf_)"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
