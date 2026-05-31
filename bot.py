@@ -8,7 +8,10 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 
-CHOOSING_NICHE, WAITING_AUDIO, WAITING_COMPANY, WAITING_CONTACT, WAITING_SENT, WAITING_NEXT_STEP = range(6)
+CHOOSING_NICHE, WAITING_AUDIO, WAITING_COMPANY, WAITING_CONTACT, WAITING_FROM, WAITING_FROM_CUSTOM, WAITING_TO, WAITING_TO_CUSTOM, WAITING_SENT, WAITING_NEXT_STEP = range(10)
+
+PORTS_FROM = ['\u0428\u0430\u043d\u0445\u0430\u0439', '\u0426\u0438\u043d\u0434\u0430\u043e', '\u041d\u0438\u043d\u0433\u0431\u043e', '\u0413\u0443\u0430\u043d\u0447\u0436\u043e\u0443', '\u0428\u044d\u043d\u044c\u0447\u0436\u044d\u043d\u044c', '\u0414\u0440\u0443\u0433\u043e\u0435']
+CITIES_TO = ['\u041c\u043e\u0441\u043a\u0432\u0430', '\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433', '\u041d\u043e\u0432\u043e\u0440\u043e\u0441\u0441\u0438\u0439\u0441\u043a', '\u0412\u043b\u0430\u0434\u0438\u0432\u043e\u0441\u0442\u043e\u043a', '\u0415\u043a\u0430\u0442\u0435\u0440\u0438\u043d\u0431\u0443\u0440\u0433', '\u0414\u0440\u0443\u0433\u043e\u0435']
 
 NICHES = ['\u041b\u043e\u0433\u0438\u0441\u0442\u0438\u043a\u0430']
 NICHES_CTX = {'\u041b\u043e\u0433\u0438\u0441\u0442\u0438\u043a\u0430': '\u041d\u0438\u0448\u0430: \u0433\u0440\u0443\u0437\u043e\u043f\u0435\u0440\u0435\u0432\u043e\u0437\u043a\u0438 \u0438 \u043b\u043e\u0433\u0438\u0441\u0442\u0438\u043a\u0430. \u041c\u0430\u0440\u0448\u0440\u0443\u0442\u044b, \u0441\u0440\u043e\u043a\u0438, \u0444\u0440\u0430\u0445\u0442, \u043e\u0431\u044a\u0435\u043c\u044b, \u0442\u0438\u043f\u044b \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u043e\u0432.'}
@@ -183,6 +186,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         analysis = analysis.replace("\u0427\u0442\u043e \u0443\u043f\u0443\u0449\u0435\u043d\u043e:", "\U0001f534 \u0427\u0442\u043e \u0443\u043f\u0443\u0449\u0435\u043d\u043e:")
         analysis = analysis.replace("\u0417\u0435\u043b\u0435\u043d\u044b\u0439 \u043a\u0440\u0443\u0433:", "\U0001f7e2")
         analysis = analysis.replace("\u041a\u0440\u0430\u0441\u043d\u044b\u0439 \u043a\u0440\u0443\u0433:", "\U0001f534")
+        analysis = analysis.replace("*", "")
+        analysis = analysis.replace("\u041a\u0422\u041e \u0415\u0421\u0422\u042c \u041a\u0422\u041e", "\u0423\u0427\u0410\u0421\u0422\u041d\u0418\u041a\u0418 \u0417\u0412\u041e\u041d\u041a\u0410")
         await status.delete()
         if len(str(transcript)) < 3000:
             await update.message.reply_text('\u0422\u0420\u0410\u041d\u0421\u041a\u0420\u0418\u041f\u0426\u0418\u042f:\n\n' + str(transcript)[:2900])
@@ -232,6 +237,42 @@ async def waiting_company(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def waiting_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text
     context.user_data['crm_contact'] = text if text != '\u041f\u0440\u043e\u043f\u0443\u0441\u0442\u0438\u0442\u044c' else '-'
+    kb = [[PORTS_FROM[0], PORTS_FROM[1]], [PORTS_FROM[2], PORTS_FROM[3]], [PORTS_FROM[4], PORTS_FROM[5]]]
+    await update.message.reply_text('\u041e\u0442\u043a\u0443\u0434\u0430? (\u043f\u043e\u0440\u0442 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u044f)', reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
+    return WAITING_FROM
+
+
+async def waiting_from(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    if text == '\u0414\u0440\u0443\u0433\u043e\u0435':
+        await update.message.reply_text('\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u043f\u043e\u0440\u0442 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u044f:', reply_markup=ReplyKeyboardRemove())
+        return WAITING_FROM_CUSTOM
+    context.user_data['crm_from'] = text
+    kb = [[CITIES_TO[0], CITIES_TO[1]], [CITIES_TO[2], CITIES_TO[3]], [CITIES_TO[4], CITIES_TO[5]]]
+    await update.message.reply_text('\u041a\u0443\u0434\u0430? (\u0433\u043e\u0440\u043e\u0434 \u043d\u0430\u0437\u043d\u0430\u0447\u0435\u043d\u0438\u044f)', reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
+    return WAITING_TO
+
+
+async def waiting_from_custom(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['crm_from'] = update.message.text
+    kb = [[CITIES_TO[0], CITIES_TO[1]], [CITIES_TO[2], CITIES_TO[3]], [CITIES_TO[4], CITIES_TO[5]]]
+    await update.message.reply_text('\u041a\u0443\u0434\u0430? (\u0433\u043e\u0440\u043e\u0434 \u043d\u0430\u0437\u043d\u0430\u0447\u0435\u043d\u0438\u044f)', reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
+    return WAITING_TO
+
+
+async def waiting_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    if text == '\u0414\u0440\u0443\u0433\u043e\u0435':
+        await update.message.reply_text('\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0433\u043e\u0440\u043e\u0434 \u043d\u0430\u0437\u043d\u0430\u0447\u0435\u043d\u0438\u044f:', reply_markup=ReplyKeyboardRemove())
+        return WAITING_TO_CUSTOM
+    context.user_data['crm_to'] = text
+    kb = [['\u041a\u041f', '\u041e\u0431\u0449\u0430\u044f \u0438\u043d\u0444\u043e\u0440\u043c\u0430\u0446\u0438\u044f', '\u041d\u0438\u0447\u0435\u0433\u043e']]
+    await update.message.reply_text('\u0427\u0442\u043e \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043b\u0438 \u043a\u043b\u0438\u0435\u043d\u0442\u0443?', reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
+    return WAITING_SENT
+
+
+async def waiting_to_custom(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['crm_to'] = update.message.text
     kb = [['\u041a\u041f', '\u041e\u0431\u0449\u0430\u044f \u0438\u043d\u0444\u043e\u0440\u043c\u0430\u0446\u0438\u044f', '\u041d\u0438\u0447\u0435\u0433\u043e']]
     await update.message.reply_text('\u0427\u0442\u043e \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043b\u0438 \u043a\u043b\u0438\u0435\u043d\u0442\u0443?', reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
     return WAITING_SENT
@@ -246,13 +287,10 @@ async def waiting_sent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def waiting_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    transcript = context.user_data.get('last_transcript', '')
 
-    direction = '-'
-    for line in transcript.split('.'):
-        if any(city in line for city in ['\u0428\u0430\u043d\u0445\u0430\u0439', '\u0426\u0438\u043d\u0434\u0430\u043e', '\u0413\u0443\u0430\u043d\u0447\u0436\u043e\u0443', '\u041d\u0438\u043d\u0433\u0431\u043e', '\u041c\u043e\u0441\u043a\u0432\u0430', '\u0421\u041f\u0431', '\u0412\u043b\u0430\u0434\u0438\u0432\u043e\u0441\u0442\u043e\u043a']):
-            direction = line.strip()[:50]
-            break
+    frm = context.user_data.get('crm_from', '-')
+    to = context.user_data.get('crm_to', '-')
+    direction = frm + ' \u2192 ' + to
 
     client_data = {
         'company': context.user_data.get('crm_company', '-'),
@@ -299,6 +337,10 @@ def main():
             ],
             WAITING_COMPANY: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_company)],
             WAITING_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_contact)],
+            WAITING_FROM: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_from)],
+            WAITING_FROM_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_from_custom)],
+            WAITING_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_to)],
+            WAITING_TO_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_to_custom)],
             WAITING_SENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_sent)],
             WAITING_NEXT_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_next_step)],
         },
