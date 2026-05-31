@@ -3,10 +3,98 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
 from groq import Groq
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+
+def db_connect():
+    return psycopg2.connect(DATABASE_URL)
+
+
+def db_init():
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS clients (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            company TEXT,
+            contact TEXT,
+            direction TEXT,
+            sent TEXT,
+            next_step TEXT,
+            created_date TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS stats (
+            user_id BIGINT PRIMARY KEY,
+            calls_count INTEGER DEFAULT 0,
+            first_seen TEXT,
+            last_seen TEXT
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+    logging.info("Database initialized")
+
+
+def db_add_client(user_id, data):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO clients (user_id, company, contact, direction, sent, next_step, created_date) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (user_id, data['company'], data['contact'], data['direction'], data['sent'], data['next_step'], data['date'])
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def db_get_clients(user_id):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM clients WHERE user_id = %s ORDER BY id DESC", (user_id,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def db_track_call(user_id):
+    conn = db_connect()
+    cur = conn.cursor()
+    now = datetime.now().strftime('%d.%m.%Y')
+    cur.execute("SELECT user_id FROM stats WHERE user_id = %s", (user_id,))
+    if cur.fetchone():
+        cur.execute("UPDATE stats SET calls_count = calls_count + 1, last_seen = %s WHERE user_id = %s", (now, user_id))
+    else:
+        cur.execute("INSERT INTO stats (user_id, calls_count, first_seen, last_seen) VALUES (%s, 1, %s, %s)", (user_id, now, now))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def db_get_stats():
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM stats")
+    total_users = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(calls_count), 0) FROM stats")
+    total_calls = cur.fetchone()[0]
+    today = datetime.now().strftime('%d.%m.%Y')
+    cur.execute("SELECT COUNT(*) FROM stats WHERE last_seen = %s", (today,))
+    active_today = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return total_users, total_calls, active_today
+
 
 CHOOSING_NICHE, WAITING_AUDIO, WAITING_COMPANY, WAITING_CONTACT, WAITING_FROM, WAITING_FROM_CUSTOM, WAITING_TO, WAITING_TO_CUSTOM, WAITING_SENT, WAITING_NEXT_STEP = range(10)
 
@@ -95,9 +183,6 @@ PROMPT = (
     "\u0426\u0435\u043b\u044c \u043d\u0430 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0437\u0432\u043e\u043d\u043e\u043a: [\u043a\u043e\u043d\u043a\u0440\u0435\u0442\u043d\u044b\u0439 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442]\n"
 )
 
-user_crm = {}
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     kb = [[n] for n in NICHES]
     await update.message.reply_text('\u041f\u0440\u0438\u0432\u0435\u0442! \u042f AI Sales Coach.\n\n\u0412 \u043a\u0430\u043a\u043e\u0439 \u043e\u0431\u043b\u0430\u0441\u0442\u0438 \u0432\u044b \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442\u0435?', reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
@@ -110,7 +195,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def crm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    clients = user_crm.get(user_id, [])
+    clients = db_get_clients(user_id)
     if not clients:
         await update.message.reply_text('\u0423 \u0432\u0430\u0441 \u043f\u043e\u043a\u0430 \u043d\u0435\u0442 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432.\n\n\u041f\u0440\u043e\u0430\u043d\u0430\u043b\u0438\u0437\u0438\u0440\u0443\u0439\u0442\u0435 \u0437\u0432\u043e\u043d\u043e\u043a \u0438 \u0434\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u043f\u0435\u0440\u0432\u043e\u0433\u043e \u043a\u043b\u0438\u0435\u043d\u0442\u0430!')
         return
@@ -121,7 +206,26 @@ async def crm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text += f"   \U0001f4cd {c['direction']}\n"
         text += f"   \U0001f4e4 \u041e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e: {c['sent']}\n"
         text += f"   \U0001f4de \u0421\u043b\u0435\u0434. \u0448\u0430\u0433: {c['next_step']}\n"
-        text += f"   \U0001f4c5 {c['date']}\n\n"
+        text += f"   \U0001f4c5 {c['created_date']}\n\n"
+    while text:
+        if len(text) <= 4000:
+            await update.message.reply_text(text)
+            break
+        split = text[:4000].rfind("\n\n")
+        if split == -1:
+            split = 4000
+        await update.message.reply_text(text[:split])
+        text = text[split:].lstrip("\n")
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    total_users, total_calls, active_today = db_get_stats()
+    text = (
+        "\U0001f4ca \u0421\u0422\u0410\u0422\u0418\u0421\u0422\u0418\u041a\u0410 \u0411\u041e\u0422\u0410\n\n"
+        f"\U0001f465 \u0412\u0441\u0435\u0433\u043e \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439: {total_users}\n"
+        f"\U0001f4de \u0412\u0441\u0435\u0433\u043e \u0437\u0432\u043e\u043d\u043a\u043e\u0432: {total_calls}\n"
+        f"\U0001f7e2 \u0410\u043a\u0442\u0438\u0432\u043d\u044b \u0441\u0435\u0433\u043e\u0434\u043d\u044f: {active_today}"
+    )
     await update.message.reply_text(text)
 
 
@@ -176,6 +280,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             ]
         )
         analysis = response.choices[0].message.content
+        try:
+            db_track_call(update.effective_user.id)
+        except Exception as track_err:
+            logging.error("Track error: " + str(track_err))
         analysis = re.sub(r'[\u1100-\u11FF\u2E80-\u2FFF\u3040-\u9FFF\uA000-\uA4FF\uAC00-\uD7FF\uF900-\uFAFF]', '', analysis)
         analysis = analysis.replace("\u0425\u043e\u0440\u043e\u0448\u043e:", "\U0001f7e2 \u0425\u043e\u0440\u043e\u0448\u043e:")
         analysis = analysis.replace("\u0423\u043f\u0443\u0449\u0435\u043d\u043e:", "\U0001f534 \u0423\u043f\u0443\u0449\u0435\u043d\u043e:")
@@ -301,9 +409,7 @@ async def waiting_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         'date': datetime.now().strftime('%d.%m.%Y')
     }
 
-    if user_id not in user_crm:
-        user_crm[user_id] = []
-    user_crm[user_id].append(client_data)
+    db_add_client(user_id, client_data)
 
     card = (
         f"\U0001f4cb \u041a\u043b\u0438\u0435\u043d\u0442 \u0441\u043e\u0445\u0440\u0430\u043d\u0451\u043d!\n\n"
@@ -326,6 +432,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 
 def main():
+    db_init()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -349,6 +456,7 @@ def main():
     app.add_handler(conv)
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("crm", crm_command))
+    app.add_handler(CommandHandler("stats", stats_command))
     print("Bot started!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
