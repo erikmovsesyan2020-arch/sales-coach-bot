@@ -36,7 +36,10 @@ def db_init():
             direction TEXT,
             sent TEXT,
             next_step TEXT,
-            created_date TEXT
+            created_date TEXT,
+            remind_date TEXT,
+            summary TEXT,
+            reminded INTEGER DEFAULT 0
         )
     """)
     cur.execute("""
@@ -47,6 +50,11 @@ def db_init():
             last_seen TEXT
         )
     """)
+    for col, coltype in [("remind_date", "TEXT"), ("summary", "TEXT"), ("reminded", "INTEGER DEFAULT 0")]:
+        try:
+            cur.execute(f"ALTER TABLE clients ADD COLUMN IF NOT EXISTS {col} {coltype}")
+        except Exception as mig_err:
+            logging.error("Migration: " + str(mig_err))
     conn.commit()
     cur.close()
     conn.close()
@@ -57,9 +65,31 @@ def db_add_client(user_id, data):
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO clients (user_id, company, contact, direction, sent, next_step, created_date) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (user_id, data['company'], data['contact'], data['direction'], data['sent'], data['next_step'], data['date'])
+        "INSERT INTO clients (user_id, company, contact, direction, sent, next_step, created_date, remind_date, summary, reminded) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0)",
+        (user_id, data['company'], data['contact'], data['direction'], data['sent'], data['next_step'], data['date'], data.get('remind_date', ''), data.get('summary', ''))
     )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def db_get_due_reminders(today):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, user_id, company, contact, direction, next_step, summary FROM clients WHERE remind_date = %s AND reminded = 0",
+        (today,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def db_mark_reminded(client_id):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE clients SET reminded = 1 WHERE id = %s", (client_id,))
     conn.commit()
     cur.close()
     conn.close()
@@ -110,7 +140,9 @@ def db_get_stats():
     return total_users, total_calls, active_today
 
 
-CHOOSING_NICHE, WAITING_AUDIO, WAITING_COMPANY, WAITING_CONTACT, WAITING_FROM, WAITING_FROM_CUSTOM, WAITING_TO, WAITING_TO_CUSTOM, WAITING_SENT, WAITING_NEXT_STEP = range(10)
+CHOOSING_NICHE, WAITING_AUDIO, WAITING_COMPANY, WAITING_CONTACT, WAITING_FROM, WAITING_FROM_CUSTOM, WAITING_TO, WAITING_TO_CUSTOM, WAITING_SENT, WAITING_NEXT_STEP, WAITING_REMIND = range(11)
+
+RU_MONTHS = ['', '\u042f\u043d\u0432\u0430\u0440\u044c', '\u0424\u0435\u0432\u0440\u0430\u043b\u044c', '\u041c\u0430\u0440\u0442', '\u0410\u043f\u0440\u0435\u043b\u044c', '\u041c\u0430\u0439', '\u0418\u044e\u043d\u044c', '\u0418\u044e\u043b\u044c', '\u0410\u0432\u0433\u0443\u0441\u0442', '\u0421\u0435\u043d\u0442\u044f\u0431\u0440\u044c', '\u041e\u043a\u0442\u044f\u0431\u0440\u044c', '\u041d\u043e\u044f\u0431\u0440\u044c', '\u0414\u0435\u043a\u0430\u0431\u0440\u044c']
 
 PORTS_FROM = ['\u0428\u0430\u043d\u0445\u0430\u0439', '\u0426\u0438\u043d\u0434\u0430\u043e', '\u041d\u0438\u043d\u0433\u0431\u043e', '\u0413\u0443\u0430\u043d\u0447\u0436\u043e\u0443', '\u0428\u044d\u043d\u044c\u0447\u0436\u044d\u043d\u044c', '\u0414\u0440\u0443\u0433\u043e\u0435']
 CITIES_TO = ['\u041c\u043e\u0441\u043a\u0432\u0430', '\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433', '\u041d\u043e\u0432\u043e\u0440\u043e\u0441\u0441\u0438\u0439\u0441\u043a', '\u0412\u043b\u0430\u0434\u0438\u0432\u043e\u0441\u0442\u043e\u043a', '\u0415\u043a\u0430\u0442\u0435\u0440\u0438\u043d\u0431\u0443\u0440\u0433', '\u0414\u0440\u0443\u0433\u043e\u0435']
@@ -298,6 +330,23 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             db_track_call(update.effective_user.id)
         except Exception as track_err:
             logging.error("Track error: " + str(track_err))
+        # \u0413\u0435\u043d\u0435\u0440\u0438\u0440\u0443\u0435\u043c \u0441\u0443\u0442\u044c \u0440\u0430\u0437\u0433\u043e\u0432\u043e\u0440\u0430 \u0434\u043b\u044f \u043d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u044f
+        try:
+            summary_resp = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                temperature=0.3,
+                max_tokens=120,
+                messages=[
+                    {"role": "system", "content": "\u0422\u044b \u043f\u043e\u043c\u043e\u0449\u043d\u0438\u043a. \u041d\u0430\u043f\u0438\u0448\u0438 \u0421\u0423\u0422\u042c \u0437\u0432\u043e\u043d\u043a\u0430 \u041e\u0414\u041d\u0418\u041c \u043a\u043e\u0440\u043e\u0442\u043a\u0438\u043c \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435\u043c (\u0434\u043e 15 \u0441\u043b\u043e\u0432), \u0447\u0442\u043e\u0431\u044b \u043f\u0440\u043e\u0434\u0430\u0432\u0435\u0446 \u0432\u0441\u043f\u043e\u043c\u043d\u0438\u043b \u043a\u043b\u0438\u0435\u043d\u0442\u0430. \u0411\u0435\u0437 \u0432\u0441\u0442\u0443\u043f\u043b\u0435\u043d\u0438\u0439, \u0442\u043e\u043b\u044c\u043a\u043e \u0441\u0443\u0442\u044c. \u041f\u0440\u0438\u043c\u0435\u0440: '\u0417\u0430\u043f\u0440\u043e\u0441\u0438\u043b \u0441\u0442\u0430\u0432\u043a\u0443 \u0428\u0430\u043d\u0445\u0430\u0439-\u041c\u043e\u0441\u043a\u0432\u0430, \u0435\u0441\u0442\u044c \u0441\u0432\u043e\u0438 \u043f\u0435\u0440\u0435\u0432\u043e\u0437\u0447\u0438\u043a\u0438, \u0433\u043e\u0442\u043e\u0432 \u0441\u0440\u0430\u0432\u043d\u0438\u0442\u044c'"},
+                    {"role": "user", "content": str(transcript)}
+                ]
+            )
+            summary_text = summary_resp.choices[0].message.content.strip()
+            summary_text = re.sub(r'[\u1100-\u11FF\u2E80-\u2FFF\u3040-\u9FFF\uA000-\uA4FF\uAC00-\uD7FF\uF900-\uFAFF]', '', summary_text)
+            context.user_data['crm_summary'] = summary_text
+        except Exception as sum_err:
+            logging.error("Summary error: " + str(sum_err))
+            context.user_data['crm_summary'] = ''
         analysis = re.sub(r'[\u1100-\u11FF\u2E80-\u2FFF\u3040-\u9FFF\uA000-\uA4FF\uAC00-\uD7FF\uF900-\uFAFF]', '', analysis)
         analysis = analysis.replace("\u0425\u043e\u0440\u043e\u0448\u043e:", "\U0001f7e2 \u0425\u043e\u0440\u043e\u0448\u043e:")
         analysis = analysis.replace("\u0423\u043f\u0443\u0449\u0435\u043d\u043e:", "\U0001f534 \u0423\u043f\u0443\u0449\u0435\u043d\u043e:")
@@ -408,7 +457,90 @@ async def waiting_sent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def waiting_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
+    next_step = update.message.text
+    context.user_data['crm_next_step'] = next_step
+
+    # \u0415\u0441\u043b\u0438 \u041e\u0442\u043a\u0430\u0437 - \u0441\u043e\u0445\u0440\u0430\u043d\u044f\u0435\u043c \u0431\u0435\u0437 \u043d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u044f
+    if next_step == '\u041e\u0442\u043a\u0430\u0437':
+        return await save_client(update, context, remind_date='')
+
+    kb = [['\u0417\u0430\u0432\u0442\u0440\u0430', '\u0427\u0435\u0440\u0435\u0437 3 \u0434\u043d\u044f'], ['\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0434\u0430\u0442\u0443']]
+    await update.message.reply_text('\u041a\u043e\u0433\u0434\u0430 \u043d\u0430\u043f\u043e\u043c\u043d\u0438\u0442\u044c?', reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
+    return WAITING_REMIND
+
+
+def build_calendar(year, month):
+    kb = []
+    kb.append([InlineKeyboardButton(f"{RU_MONTHS[month]} {year}", callback_data="cal_ignore")])
+    days_header = ['\u041f\u043d', '\u0412\u0442', '\u0421\u0440', '\u0427\u0442', '\u041f\u0442', '\u0421\u0431', '\u0412\u0441']
+    kb.append([InlineKeyboardButton(d, callback_data="cal_ignore") for d in days_header])
+    import calendar as cal_module
+    first_weekday, days_in_month = cal_module.monthrange(year, month)
+    row = []
+    for _ in range(first_weekday):
+        row.append(InlineKeyboardButton(" ", callback_data="cal_ignore"))
+    for day in range(1, days_in_month + 1):
+        row.append(InlineKeyboardButton(str(day), callback_data=f"cal_day_{year}_{month}_{day}"))
+        if len(row) == 7:
+            kb.append(row)
+            row = []
+    if row:
+        while len(row) < 7:
+            row.append(InlineKeyboardButton(" ", callback_data="cal_ignore"))
+        kb.append(row)
+    prev_m = month - 1 if month > 1 else 12
+    prev_y = year if month > 1 else year - 1
+    next_m = month + 1 if month < 12 else 1
+    next_y = year if month < 12 else year + 1
+    kb.append([
+        InlineKeyboardButton("\u25c0", callback_data=f"cal_nav_{prev_y}_{prev_m}"),
+        InlineKeyboardButton("\u25b6", callback_data=f"cal_nav_{next_y}_{next_m}")
+    ])
+    return InlineKeyboardMarkup(kb)
+
+
+async def waiting_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    from datetime import timedelta
+    text = update.message.text
+    if text == '\u0417\u0430\u0432\u0442\u0440\u0430':
+        d = (datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y')
+        return await save_client(update, context, remind_date=d)
+    if text == '\u0427\u0435\u0440\u0435\u0437 3 \u0434\u043d\u044f':
+        d = (datetime.now() + timedelta(days=3)).strftime('%d.%m.%Y')
+        return await save_client(update, context, remind_date=d)
+    if text == '\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0434\u0430\u0442\u0443':
+        now = datetime.now()
+        await update.message.reply_text('\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0434\u0430\u0442\u0443:', reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text('\U0001f4c5', reply_markup=build_calendar(now.year, now.month))
+        return WAITING_REMIND
+    return WAITING_REMIND
+
+
+async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "cal_ignore":
+        return WAITING_REMIND
+    if data.startswith("cal_nav_"):
+        _, _, year, month = data.split("_")
+        await query.edit_message_reply_markup(reply_markup=build_calendar(int(year), int(month)))
+        return WAITING_REMIND
+    if data.startswith("cal_day_"):
+        _, _, year, month, day = data.split("_")
+        remind_date = f"{int(day):02d}.{int(month):02d}.{year}"
+        await query.edit_message_text(f"\U0001f4c5 \u041d\u0430\u043f\u043e\u043c\u043d\u044e: {remind_date}")
+        return await save_client(update, context, remind_date=remind_date, via_callback=True)
+    return WAITING_REMIND
+
+
+async def save_client(update, context, remind_date='', via_callback=False):
+    if via_callback:
+        user_id = update.callback_query.from_user.id
+        send = update.callback_query.message.reply_text
+    else:
+        user_id = update.effective_user.id
+        send = update.message.reply_text
 
     frm = context.user_data.get('crm_from', '-')
     to = context.user_data.get('crm_to', '-')
@@ -419,12 +551,15 @@ async def waiting_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         'contact': context.user_data.get('crm_contact', '-'),
         'direction': direction,
         'sent': context.user_data.get('crm_sent', '-'),
-        'next_step': update.message.text,
-        'date': datetime.now().strftime('%d.%m.%Y')
+        'next_step': context.user_data.get('crm_next_step', '-'),
+        'date': datetime.now().strftime('%d.%m.%Y'),
+        'remind_date': remind_date,
+        'summary': context.user_data.get('crm_summary', '')
     }
 
     db_add_client(user_id, client_data)
 
+    remind_line = f"\n\U0001f514 \u041d\u0430\u043f\u043e\u043c\u043d\u044e: {remind_date}" if remind_date else ""
     card = (
         f"\U0001f4cb \u041a\u043b\u0438\u0435\u043d\u0442 \u0441\u043e\u0445\u0440\u0430\u043d\u0451\u043d!\n\n"
         f"\U0001f3e2 {client_data['company']}\n"
@@ -433,11 +568,37 @@ async def waiting_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"\U0001f4e4 \u041e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e: {client_data['sent']}\n"
         f"\U0001f4de \u0421\u043b\u0435\u0434. \u0448\u0430\u0433: {client_data['next_step']}\n"
         f"\U0001f4c5 {client_data['date']}"
+        f"{remind_line}"
     )
 
-    await update.message.reply_text(card, reply_markup=ReplyKeyboardRemove())
-    await update.message.reply_text('\u041e\u0442\u043f\u0440\u0430\u0432\u044c \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0437\u0432\u043e\u043d\u043e\u043a \u0438\u043b\u0438 /crm \u0447\u0442\u043e\u0431\u044b \u0443\u0432\u0438\u0434\u0435\u0442\u044c \u0432\u0441\u0435\u0445 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432.')
+    await send(card, reply_markup=ReplyKeyboardRemove())
+    await send('\u041e\u0442\u043f\u0440\u0430\u0432\u044c \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0437\u0432\u043e\u043d\u043e\u043a \u0438\u043b\u0438 /crm \u0447\u0442\u043e\u0431\u044b \u0443\u0432\u0438\u0434\u0435\u0442\u044c \u0432\u0441\u0435\u0445 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432.')
     return WAITING_AUDIO
+
+
+async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
+    today = datetime.now().strftime('%d.%m.%Y')
+    try:
+        due = db_get_due_reminders(today)
+    except Exception as e:
+        logging.error("Reminders check error: " + str(e))
+        return
+    for row in due:
+        client_id, user_id, company, contact, direction, next_step, summary = row
+        summary_line = f"\n\U0001f4ac {summary}" if summary else ""
+        text = (
+            f"\U0001f514 \u041d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u0435!\n\n"
+            f"\U0001f3e2 {company}\n"
+            f"\U0001f464 {contact}\n"
+            f"\U0001f4cd {direction}\n"
+            f"\U0001f4de {next_step}"
+            f"{summary_line}"
+        )
+        try:
+            await context.bot.send_message(chat_id=user_id, text=text)
+            db_mark_reminded(client_id)
+        except Exception as e:
+            logging.error("Reminder send error: " + str(e))
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -464,6 +625,10 @@ def main():
             WAITING_TO_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_to_custom)],
             WAITING_SENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_sent)],
             WAITING_NEXT_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_next_step)],
+            WAITING_REMIND: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, waiting_remind),
+                CallbackQueryHandler(calendar_callback, pattern="^cal_")
+            ],
         },
         fallbacks=[CommandHandler("start", start)]
     )
@@ -471,6 +636,11 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("crm", crm_command))
     app.add_handler(CommandHandler("stats", stats_command))
+
+    job_queue = app.job_queue
+    if job_queue:
+        job_queue.run_repeating(check_reminders, interval=3600, first=30)
+
     print("Bot started!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
