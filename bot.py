@@ -783,7 +783,20 @@ async def crm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         client_id = int(client_id_str)
         context.user_data['editing_client'] = client_id
         context.user_data['editing_field'] = fkey
-        await query.edit_message_text(f"\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u043d\u043e\u0432\u043e\u0435 \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u0434\u043b\u044f \u043f\u043e\u043b\u044f \"{FIELD_NAMES[fkey]}\":")
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("\u25c0\ufe0f \u041e\u0442\u043c\u0435\u043d\u0430", callback_data=f"canceledit_{client_id}")]])
+        await query.edit_message_text(f"\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u043d\u043e\u0432\u043e\u0435 \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u0434\u043b\u044f \u043f\u043e\u043b\u044f \"{FIELD_NAMES[fkey]}\":", reply_markup=cancel_kb)
+        return
+
+    if data.startswith("canceledit_"):
+        client_id = int(data[11:])
+        context.user_data['editing_client'] = None
+        context.user_data['editing_field'] = None
+        user_id = query.from_user.id
+        c = db_get_client_by_id(client_id, user_id)
+        if c:
+            await query.edit_message_text(format_client_card(c), reply_markup=client_buttons(client_id))
+        else:
+            await query.edit_message_text("\u041e\u0442\u043c\u0435\u043d\u0435\u043d\u043e.")
         return
 
 
@@ -841,7 +854,7 @@ def main():
     app.add_handler(CommandHandler("crm", crm_command))
     app.add_handler(CommandHandler("edit", edit_command))
     app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CallbackQueryHandler(crm_callback, pattern="^(edit_|del_|delyes_|delno_|setf_)"))
+    app.add_handler(CallbackQueryHandler(crm_callback, pattern="^(edit_|del_|delyes_|delno_|setf_|canceledit_)"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     job_queue = app.job_queue
