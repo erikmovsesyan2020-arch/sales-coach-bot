@@ -3,8 +3,9 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
 from groq import Groq
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import pg8000.dbapi
+pg8000.dbapi.paramstyle = "format"
+from urllib.parse import urlparse
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
@@ -13,7 +14,14 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
 def db_connect():
-    return psycopg2.connect(DATABASE_URL)
+    result = urlparse(DATABASE_URL)
+    return pg8000.dbapi.connect(
+        user=result.username,
+        password=result.password,
+        host=result.hostname,
+        port=result.port or 5432,
+        database=result.path[1:]
+    )
 
 
 def db_init():
@@ -59,12 +67,18 @@ def db_add_client(user_id, data):
 
 def db_get_clients(user_id):
     conn = db_connect()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM clients WHERE user_id = %s ORDER BY id DESC", (user_id,))
+    cur = conn.cursor()
+    cur.execute("SELECT company, contact, direction, sent, next_step, created_date FROM clients WHERE user_id = %s ORDER BY id DESC", (user_id,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return rows
+    result = []
+    for r in rows:
+        result.append({
+            'company': r[0], 'contact': r[1], 'direction': r[2],
+            'sent': r[3], 'next_step': r[4], 'created_date': r[5]
+        })
+    return result
 
 
 def db_track_call(user_id):
