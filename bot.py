@@ -98,7 +98,7 @@ def db_mark_reminded(client_id):
 def db_get_clients(user_id):
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("SELECT company, contact, direction, sent, next_step, created_date FROM clients WHERE user_id = %s ORDER BY id DESC", (user_id,))
+    cur.execute("SELECT company, contact, direction, sent, next_step, created_date, summary, remind_date FROM clients WHERE user_id = %s ORDER BY id DESC", (user_id,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -106,7 +106,8 @@ def db_get_clients(user_id):
     for r in rows:
         result.append({
             'company': r[0], 'contact': r[1], 'direction': r[2],
-            'sent': r[3], 'next_step': r[4], 'created_date': r[5]
+            'sent': r[3], 'next_step': r[4], 'created_date': r[5],
+            'summary': r[6], 'remind_date': r[7]
         })
     return result
 
@@ -252,6 +253,10 @@ async def crm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text += f"   \U0001f4cd {c['direction']}\n"
         text += f"   \U0001f4e4 \u041e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e: {c['sent']}\n"
         text += f"   \U0001f4de \u0421\u043b\u0435\u0434. \u0448\u0430\u0433: {c['next_step']}\n"
+        if c.get('remind_date'):
+            text += f"   \U0001f514 \u041d\u0430\u043f\u043e\u043c\u043d\u044e: {c['remind_date']}\n"
+        if c.get('summary'):
+            text += f"   \U0001f4ac {c['summary']}\n"
         text += f"   \U0001f4c5 {c['created_date']}\n\n"
     while text:
         if len(text) <= 4000:
@@ -264,7 +269,12 @@ async def crm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text = text[split:].lstrip("\n")
 
 
+ADMIN_ID = 1437708144
+
+
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
     total_users, total_calls, active_today = db_get_stats()
     text = (
         "\U0001f4ca \u0421\u0422\u0410\u0422\u0418\u0421\u0422\u0418\u041a\u0410 \u0411\u041e\u0422\u0410\n\n"
