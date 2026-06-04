@@ -397,6 +397,110 @@ async def choose_niche(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 
+def analyze_acoustics(audio_path, segments=None):
+    """\u0410\u043a\u0443\u0441\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u0430\u043d\u0430\u043b\u0438\u0437. \u041c\u044f\u0433\u043a\u0430\u044f \u0434\u0435\u0433\u0440\u0430\u0434\u0430\u0446\u0438\u044f - \u043f\u0440\u0438 \u043b\u044e\u0431\u043e\u0439 \u043e\u0448\u0438\u0431\u043a\u0435 \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442 \u043f\u0443\u0441\u0442\u043e\u0442\u0443."""
+    result = {}
+
+    # --- \u0427\u0410\u0421\u0422\u042c 1: \u0422\u0435\u043c\u043f \u0438 \u043f\u0430\u0443\u0437\u044b \u0438\u0437 \u0442\u0430\u0439\u043c-\u043a\u043e\u0434\u043e\u0432 (\u0431\u0435\u0437 \u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a) ---
+    try:
+        if segments:
+            total_words = 0
+            total_speech_time = 0.0
+            pauses = []
+            prev_end = None
+            for seg in segments:
+                seg_text = seg.get('text', '')
+                seg_start = seg.get('start', 0)
+                seg_end = seg.get('end', 0)
+                words_in_seg = len(seg_text.split())
+                total_words += words_in_seg
+                total_speech_time += max(0, seg_end - seg_start)
+                if prev_end is not None:
+                    gap = seg_start - prev_end
+                    if gap > 1.5:
+                        pauses.append(round(gap, 1))
+                prev_end = seg_end
+            if total_speech_time > 0:
+                wpm = round(total_words / (total_speech_time / 60))
+                result['wpm'] = wpm
+            if pauses:
+                result['pauses'] = pauses
+                result['long_pauses_count'] = len(pauses)
+    except Exception as e:
+        logging.error("Timecode analysis error: " + str(e))
+
+    # --- \u0427\u0410\u0421\u0422\u042c 2: \u0413\u0440\u043e\u043c\u043a\u043e\u0441\u0442\u044c \u0438 \u0442\u043e\u043d \u0447\u0435\u0440\u0435\u0437 librosa (\u0440\u0438\u0441\u043a\u043e\u0432\u0430\u043d\u043d\u043e) ---
+    try:
+        import librosa
+        import numpy as np
+        y, sr = librosa.load(audio_path, sr=16000, mono=True)
+        duration = librosa.get_duration(y=y, sr=sr)
+        result['duration'] = round(duration, 1)
+
+        # \u0413\u0440\u043e\u043c\u043a\u043e\u0441\u0442\u044c (RMS energy) - \u0440\u0430\u0437\u0431\u0440\u043e\u0441
+        rms = librosa.feature.rms(y=y)[0]
+        if len(rms) > 0:
+            rms_mean = float(np.mean(rms))
+            rms_std = float(np.std(rms))
+            # \u041a\u043e\u044d\u0444\u0444\u0438\u0446\u0438\u0435\u043d\u0442 \u0432\u0430\u0440\u0438\u0430\u0446\u0438\u0438 \u0433\u0440\u043e\u043c\u043a\u043e\u0441\u0442\u0438 (\u043c\u043e\u043d\u043e\u0442\u043e\u043d\u043d\u043e\u0441\u0442\u044c vs \u0436\u0438\u0432\u043e\u0441\u0442\u044c)
+            if rms_mean > 0:
+                result['volume_variation'] = round(rms_std / rms_mean, 2)
+
+        # \u0412\u044b\u0441\u043e\u0442\u0430 \u0442\u043e\u043d\u0430 (pitch) - \u0441\u0440\u0435\u0434\u043d\u044f\u044f \u0438 \u0440\u0430\u0437\u0431\u0440\u043e\u0441
+        try:
+            f0, voiced_flag, voiced_probs = librosa.pyin(
+                y, fmin=float(librosa.note_to_hz('C2')),
+                fmax=float(librosa.note_to_hz('C7')), sr=sr
+            )
+            f0_valid = f0[~np.isnan(f0)]
+            if len(f0_valid) > 0:
+                result['pitch_mean'] = round(float(np.mean(f0_valid)))
+                result['pitch_variation'] = round(float(np.std(f0_valid)) / float(np.mean(f0_valid)), 2)
+        except Exception as pitch_err:
+            logging.error("Pitch error: " + str(pitch_err))
+
+    except Exception as e:
+        logging.error("Librosa analysis skipped: " + str(e))
+
+    return result
+
+
+def format_acoustics_for_prompt(ac):
+    """\u041f\u0440\u0435\u0432\u0440\u0430\u0449\u0430\u0435\u0442 \u043c\u0435\u0442\u0440\u0438\u043a\u0438 \u0432 \u0442\u0435\u043a\u0441\u0442 \u0434\u043b\u044f llama."""
+    if not ac:
+        return ""
+    lines = []
+    if 'wpm' in ac:
+        wpm = ac['wpm']
+        if wpm > 170:
+            speed_note = "(\u0431\u044b\u0441\u0442\u0440\u043e, \u043a\u043b\u0438\u0435\u043d\u0442 \u043c\u043e\u0436\u0435\u0442 \u043d\u0435 \u0443\u0441\u043f\u0435\u0432\u0430\u0442\u044c)"
+        elif wpm < 100:
+            speed_note = "(\u043c\u0435\u0434\u043b\u0435\u043d\u043d\u043e, \u043c\u043e\u0436\u0435\u0442 \u0442\u0435\u0440\u044f\u0442\u044c\u0441\u044f \u0442\u0435\u043c\u043f)"
+        else:
+            speed_note = "(\u043d\u043e\u0440\u043c\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u043c\u043f)"
+        lines.append(f"- \u0422\u0435\u043c\u043f \u0440\u0435\u0447\u0438: {wpm} \u0441\u043b\u043e\u0432/\u043c\u0438\u043d {speed_note}")
+    if 'long_pauses_count' in ac and ac['long_pauses_count'] > 0:
+        pauses_str = ", ".join(str(p) + "\u0441" for p in ac['pauses'][:5])
+        lines.append(f"- \u0414\u043b\u0438\u043d\u043d\u044b\u0435 \u043f\u0430\u0443\u0437\u044b ({ac['long_pauses_count']}): {pauses_str} - \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u044b\u0435 \u043c\u043e\u043c\u0435\u043d\u0442\u044b \u0440\u0430\u0441\u0442\u0435\u0440\u044f\u043d\u043d\u043e\u0441\u0442\u0438 \u0438\u043b\u0438 \u0440\u0430\u0437\u0434\u0443\u043c\u0438\u0439")
+    if 'volume_variation' in ac:
+        vv = ac['volume_variation']
+        if vv < 0.4:
+            lines.append(f"- \u0413\u0440\u043e\u043c\u043a\u043e\u0441\u0442\u044c \u043c\u043e\u043d\u043e\u0442\u043e\u043d\u043d\u0430\u044f (\u0432\u0430\u0440\u0438\u0430\u0446\u0438\u044f {vv}) - \u0440\u0435\u0447\u044c \u043c\u043e\u0436\u0435\u0442 \u0437\u0432\u0443\u0447\u0430\u0442\u044c \u0441\u043a\u0443\u0447\u043d\u043e, \u0431\u0435\u0437 \u044d\u043d\u0435\u0440\u0433\u0438\u0438")
+        elif vv > 0.9:
+            lines.append(f"- \u0413\u0440\u043e\u043c\u043a\u043e\u0441\u0442\u044c \u043e\u0447\u0435\u043d\u044c \u043f\u0435\u0440\u0435\u043c\u0435\u043d\u0447\u0438\u0432\u0430\u044f (\u0432\u0430\u0440\u0438\u0430\u0446\u0438\u044f {vv}) - \u044d\u043c\u043e\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u043e, \u043d\u043e \u043c\u043e\u0436\u0435\u0442 \u0431\u044b\u0442\u044c \u043d\u0435\u0440\u043e\u0432\u043d\u043e")
+        else:
+            lines.append(f"- \u0413\u0440\u043e\u043c\u043a\u043e\u0441\u0442\u044c \u0436\u0438\u0432\u0430\u044f, \u0441 \u044d\u043d\u0435\u0440\u0433\u0438\u0435\u0439 (\u0432\u0430\u0440\u0438\u0430\u0446\u0438\u044f {vv})")
+    if 'pitch_variation' in ac:
+        pv = ac['pitch_variation']
+        if pv < 0.15:
+            lines.append(f"- \u0418\u043d\u0442\u043e\u043d\u0430\u0446\u0438\u044f \u043c\u043e\u043d\u043e\u0442\u043e\u043d\u043d\u0430\u044f - \u043c\u0430\u043b\u043e \u0436\u0438\u0432\u043e\u0441\u0442\u0438 \u0432 \u0433\u043e\u043b\u043e\u0441\u0435")
+        elif pv > 0.35:
+            lines.append(f"- \u0418\u043d\u0442\u043e\u043d\u0430\u0446\u0438\u044f \u0432\u044b\u0440\u0430\u0437\u0438\u0442\u0435\u043b\u044c\u043d\u0430\u044f, \u0436\u0438\u0432\u0430\u044f")
+    if not lines:
+        return ""
+    return "\n\n\u0410\u041a\u0423\u0421\u0422\u0418\u041a\u0410 \u0417\u0412\u041e\u041d\u041a\u0410 (\u043a\u0430\u043a \u0437\u0432\u0443\u0447\u0430\u043b\u0430 \u0440\u0435\u0447\u044c):\n" + "\n".join(lines) + "\n\u0423\u0447\u0442\u0438 \u044d\u0442\u0438 \u0434\u0430\u043d\u043d\u044b\u0435 \u0432 \u0440\u0430\u0437\u0431\u043e\u0440\u0435, \u043e\u0441\u043e\u0431\u0435\u043d\u043d\u043e \u0432 \u043a\u0440\u0438\u0442\u0435\u0440\u0438\u0438 \"\u0423\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c \u0438 \u0442\u043e\u043d\".\n"
+
+
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message.voice:
         file = await update.message.voice.get_file()
@@ -419,24 +523,47 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await file.download_to_drive(f.name)
             tmp = f.name
         with open(tmp, "rb") as af:
-            transcript = client.audio.transcriptions.create(
+            transcript_obj = client.audio.transcriptions.create(
                 model="whisper-large-v3",
                 file=("audio." + ext, af),
                 language="ru",
-                response_format="text",
+                response_format="verbose_json",
                 prompt=WHISPER_PROMPT
             )
+        # \u0418\u0437\u0432\u043b\u0435\u043a\u0430\u0435\u043c \u0442\u0435\u043a\u0441\u0442 \u0438 \u0441\u0435\u0433\u043c\u0435\u043d\u0442\u044b
+        transcript = getattr(transcript_obj, 'text', '') or ''
+        segments = getattr(transcript_obj, 'segments', None)
+        if segments is None and isinstance(transcript_obj, dict):
+            transcript = transcript_obj.get('text', '')
+            segments = transcript_obj.get('segments', None)
+
         if not transcript or len(transcript.strip()) < 30:
             await status.edit_text('\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0440\u0430\u0441\u043f\u043e\u0437\u043d\u0430\u0442\u044c \u0440\u0435\u0447\u044c. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439 \u0441\u043d\u043e\u0432\u0430.')
             return WAITING_AUDIO
-        await status.edit_text('\u0422\u0435\u043a\u0441\u0442 \u0433\u043e\u0442\u043e\u0432! \u0410\u043d\u0430\u043b\u0438\u0437\u0438\u0440\u0443\u044e...')
+
+        # \u0410\u043a\u0443\u0441\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u0430\u043d\u0430\u043b\u0438\u0437 (\u043c\u044f\u0433\u043a\u0430\u044f \u0434\u0435\u0433\u0440\u0430\u0434\u0430\u0446\u0438\u044f)
+        await status.edit_text('\u0410\u043d\u0430\u043b\u0438\u0437\u0438\u0440\u0443\u044e \u0440\u0435\u0447\u044c \u0438 \u0438\u043d\u0442\u043e\u043d\u0430\u0446\u0438\u044e...')
+        acoustics = {}
+        try:
+            seg_list = []
+            if segments:
+                for s in segments:
+                    if isinstance(s, dict):
+                        seg_list.append({'text': s.get('text', ''), 'start': s.get('start', 0), 'end': s.get('end', 0)})
+                    else:
+                        seg_list.append({'text': getattr(s, 'text', ''), 'start': getattr(s, 'start', 0), 'end': getattr(s, 'end', 0)})
+            acoustics = analyze_acoustics(tmp, seg_list)
+        except Exception as ac_err:
+            logging.error("Acoustics error: " + str(ac_err))
+
+        acoustics_text = format_acoustics_for_prompt(acoustics)
         prompt = PROMPT.format(niche_context=niche_ctx)
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             max_tokens=4000,
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": '\u041f\u0440\u043e\u0430\u043d\u0430\u043b\u0438\u0437\u0438\u0440\u0443\u0439 \u0437\u0432\u043e\u043d\u043e\u043a:\n\n' + str(transcript)}
+                {"role": "user", "content": '\u041f\u0440\u043e\u0430\u043d\u0430\u043b\u0438\u0437\u0438\u0440\u0443\u0439 \u0437\u0432\u043e\u043d\u043e\u043a:\n\n' + str(transcript) + acoustics_text}
             ]
         )
         analysis = response.choices[0].message.content
